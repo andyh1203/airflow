@@ -46,8 +46,9 @@ from airflow.bin import cli
 import airflow.example_dags
 from airflow.executors import BaseExecutor, SequentialExecutor
 from airflow.jobs import BaseJob, BackfillJob, SchedulerJob, LocalTaskJob
-from airflow.models import DAG, DagModel, DagBag, DagRun, Pool, TaskInstance as TI, \
+from airflow.models import DAG, DagModel, DagBag, DagRun, TaskInstance as TI, \
     errors
+from airflow.models.pool import Pool
 from airflow.models.slamiss import SlaMiss
 from airflow.operators.bash_operator import BashOperator
 from airflow.operators.dummy_operator import DummyOperator
@@ -103,367 +104,367 @@ class BaseJobTest(unittest.TestCase):
         def _execute(self):
             return self.cb()
 
-    def test_state_success(self):
-        job = self.TestJob(lambda: True)
-        job.run()
-
-        self.assertEqual(job.state, State.SUCCESS)
-        self.assertIsNotNone(job.end_date)
-
-    def test_state_sysexit(self):
-        import sys
-        job = self.TestJob(lambda: sys.exit(0))
-        job.run()
-
-        self.assertEqual(job.state, State.SUCCESS)
-        self.assertIsNotNone(job.end_date)
-
-    def test_state_failed(self):
-        def abort():
-            raise RuntimeError("fail")
-
-        job = self.TestJob(abort)
-        with self.assertRaises(RuntimeError):
-            job.run()
-
-        self.assertEqual(job.state, State.FAILED)
-        self.assertIsNotNone(job.end_date)
-
-
-class BackfillJobTest(unittest.TestCase):
-
-    def setUp(self):
-        self.parser = cli.CLIFactory.get_parser()
-        self.dagbag = DagBag(include_examples=True)
-
-    @unittest.skipIf('sqlite' in configuration.conf.get('core', 'sql_alchemy_conn'),
-                     "concurrent access not supported in sqlite")
-    def test_trigger_controller_dag(self):
-        dag = self.dagbag.get_dag('example_trigger_controller_dag')
-        target_dag = self.dagbag.get_dag('example_trigger_target_dag')
-        dag.clear()
-        target_dag.clear()
-
-        scheduler = SchedulerJob()
-        queue = Mock()
-        scheduler._process_task_instances(target_dag, queue=queue)
-        self.assertFalse(queue.append.called)
-
-        job = BackfillJob(
-            dag=dag,
-            start_date=DEFAULT_DATE,
-            end_date=DEFAULT_DATE,
-            ignore_first_depends_on_past=True
-        )
-        job.run()
-
-        scheduler = SchedulerJob()
-        queue = Mock()
-        scheduler._process_task_instances(target_dag, queue=queue)
-
-        self.assertTrue(queue.append.called)
-        target_dag.clear()
-        dag.clear()
-
-    @unittest.skipIf('sqlite' in configuration.conf.get('core', 'sql_alchemy_conn'),
-                     "concurrent access not supported in sqlite")
-    def test_backfill_multi_dates(self):
-        dag = self.dagbag.get_dag('example_bash_operator')
-        dag.clear()
-
-        job = BackfillJob(
-            dag=dag,
-            start_date=DEFAULT_DATE,
-            end_date=DEFAULT_DATE + datetime.timedelta(days=1),
-            ignore_first_depends_on_past=True
-        )
-        job.run()
-
-        session = settings.Session()
-        drs = session.query(DagRun).filter(
-            DagRun.dag_id == 'example_bash_operator'
-        ).order_by(DagRun.execution_date).all()
-
-        self.assertTrue(drs[0].execution_date == DEFAULT_DATE)
-        self.assertTrue(drs[0].state == State.SUCCESS)
-        self.assertTrue(drs[1].execution_date ==
-                        DEFAULT_DATE + datetime.timedelta(days=1))
-        self.assertTrue(drs[1].state == State.SUCCESS)
-
-        dag.clear()
-        session.close()
-
-    @unittest.skipIf('sqlite' in configuration.conf.get('core', 'sql_alchemy_conn'),
-                     "concurrent access not supported in sqlite")
-    def test_backfill_examples(self):
-        """
-        Test backfilling example dags
-
-        Try to backfill some of the example dags. Be careful, not all dags are suitable
-        for doing this. For example, a dag that sleeps forever, or does not have a
-        schedule won't work here since you simply can't backfill them.
-        """
-        include_dags = {
-            'example_branch_operator',
-            'example_bash_operator',
-            'example_skip_dag',
-            'latest_only'
-        }
-
-        dags = [
-            dag for dag in self.dagbag.dags.values()
-            if 'example_dags' in dag.full_filepath and dag.dag_id in include_dags
-        ]
-
-        for dag in dags:
-            dag.clear(
-                start_date=DEFAULT_DATE,
-                end_date=DEFAULT_DATE)
-
-        # Make sure that we have the dags that we want to test available
-        # in the example_dags folder, if this assertion fails, one of the
-        # dags in the include_dags array isn't available anymore
-        self.assertEqual(len(include_dags), len(dags))
-
-        for i, dag in enumerate(sorted(dags, key=lambda d: d.dag_id)):
-            logger.info('*** Running example DAG #{}: {}'.format(i, dag.dag_id))
-            job = BackfillJob(
-                dag=dag,
-                start_date=DEFAULT_DATE,
-                end_date=DEFAULT_DATE,
-                ignore_first_depends_on_past=True)
-            job.run()
-
-    def test_backfill_conf(self):
-        dag = DAG(
-            dag_id='test_backfill_conf',
-            start_date=DEFAULT_DATE,
-            schedule_interval='@daily')
-
-        with dag:
-            DummyOperator(
-                task_id='op',
-                dag=dag)
-
-        dag.clear()
-
-        executor = TestExecutor(do_update=True)
-
-        conf = json.loads("""{"key": "value"}""")
-        job = BackfillJob(dag=dag,
-                          executor=executor,
-                          start_date=DEFAULT_DATE,
-                          end_date=DEFAULT_DATE + datetime.timedelta(days=2),
-                          conf=conf)
-        job.run()
-
-        dr = DagRun.find(dag_id='test_backfill_conf')
-
-        self.assertEqual(conf, dr[0].conf)
-
-    def test_backfill_run_rescheduled(self):
-        dag = DAG(
-            dag_id='test_backfill_run_rescheduled',
-            start_date=DEFAULT_DATE,
-            schedule_interval='@daily')
-
-        with dag:
-            DummyOperator(
-                task_id='test_backfill_run_rescheduled_task-1',
-                dag=dag,
-            )
-
-        dag.clear()
-
-        executor = TestExecutor(do_update=True)
-
-        job = BackfillJob(dag=dag,
-                          executor=executor,
-                          start_date=DEFAULT_DATE,
-                          end_date=DEFAULT_DATE + datetime.timedelta(days=2),
-                          )
-        job.run()
-
-        ti = TI(task=dag.get_task('test_backfill_run_rescheduled_task-1'),
-                execution_date=DEFAULT_DATE)
-        ti.refresh_from_db()
-        ti.set_state(State.UP_FOR_RESCHEDULE)
-
-        job = BackfillJob(dag=dag,
-                          executor=executor,
-                          start_date=DEFAULT_DATE,
-                          end_date=DEFAULT_DATE + datetime.timedelta(days=2),
-                          rerun_failed_tasks=True
-                          )
-        job.run()
-        ti = TI(task=dag.get_task('test_backfill_run_rescheduled_task-1'),
-                execution_date=DEFAULT_DATE)
-        ti.refresh_from_db()
-        self.assertEqual(ti.state, State.SUCCESS)
-
-    def test_backfill_rerun_failed_tasks(self):
-        dag = DAG(
-            dag_id='test_backfill_rerun_failed',
-            start_date=DEFAULT_DATE,
-            schedule_interval='@daily')
-
-        with dag:
-            DummyOperator(
-                task_id='test_backfill_rerun_failed_task-1',
-                dag=dag)
-
-        dag.clear()
-
-        executor = TestExecutor(do_update=True)
-
-        job = BackfillJob(dag=dag,
-                          executor=executor,
-                          start_date=DEFAULT_DATE,
-                          end_date=DEFAULT_DATE + datetime.timedelta(days=2),
-                          )
-        job.run()
-
-        ti = TI(task=dag.get_task('test_backfill_rerun_failed_task-1'),
-                execution_date=DEFAULT_DATE)
-        ti.refresh_from_db()
-        ti.set_state(State.FAILED)
-
-        job = BackfillJob(dag=dag,
-                          executor=executor,
-                          start_date=DEFAULT_DATE,
-                          end_date=DEFAULT_DATE + datetime.timedelta(days=2),
-                          rerun_failed_tasks=True
-                          )
-        job.run()
-        ti = TI(task=dag.get_task('test_backfill_rerun_failed_task-1'),
-                execution_date=DEFAULT_DATE)
-        ti.refresh_from_db()
-        self.assertEqual(ti.state, State.SUCCESS)
-
-    def test_backfill_rerun_upstream_failed_tasks(self):
-            dag = DAG(
-                dag_id='test_backfill_rerun_upstream_failed',
-                start_date=DEFAULT_DATE,
-                schedule_interval='@daily')
-
-            with dag:
-                t1 = DummyOperator(task_id='test_backfill_rerun_upstream_failed_task-1',
-                                   dag=dag)
-                t2 = DummyOperator(task_id='test_backfill_rerun_upstream_failed_task-2',
-                                   dag=dag)
-                t1.set_upstream(t2)
-
-            dag.clear()
-            executor = TestExecutor(do_update=True)
-
-            job = BackfillJob(dag=dag,
-                              executor=executor,
-                              start_date=DEFAULT_DATE,
-                              end_date=DEFAULT_DATE + datetime.timedelta(days=2),
-                              )
-            job.run()
-
-            ti = TI(task=dag.get_task('test_backfill_rerun_upstream_failed_task-1'),
-                    execution_date=DEFAULT_DATE)
-            ti.refresh_from_db()
-            ti.set_state(State.UPSTREAM_FAILED)
-
-            job = BackfillJob(dag=dag,
-                              executor=executor,
-                              start_date=DEFAULT_DATE,
-                              end_date=DEFAULT_DATE + datetime.timedelta(days=2),
-                              rerun_failed_tasks=True
-                              )
-            job.run()
-            ti = TI(task=dag.get_task('test_backfill_rerun_upstream_failed_task-1'),
-                    execution_date=DEFAULT_DATE)
-            ti.refresh_from_db()
-            self.assertEqual(ti.state, State.SUCCESS)
-
-    def test_backfill_rerun_failed_tasks_without_flag(self):
-        dag = DAG(
-            dag_id='test_backfill_rerun_failed',
-            start_date=DEFAULT_DATE,
-            schedule_interval='@daily')
-
-        with dag:
-            DummyOperator(
-                task_id='test_backfill_rerun_failed_task-1',
-                dag=dag)
-
-        dag.clear()
-
-        executor = TestExecutor(do_update=True)
-
-        job = BackfillJob(dag=dag,
-                          executor=executor,
-                          start_date=DEFAULT_DATE,
-                          end_date=DEFAULT_DATE + datetime.timedelta(days=2),
-                          )
-        job.run()
-
-        ti = TI(task=dag.get_task('test_backfill_rerun_failed_task-1'),
-                execution_date=DEFAULT_DATE)
-        ti.refresh_from_db()
-        ti.set_state(State.FAILED)
-
-        job = BackfillJob(dag=dag,
-                          executor=executor,
-                          start_date=DEFAULT_DATE,
-                          end_date=DEFAULT_DATE + datetime.timedelta(days=2),
-                          rerun_failed_tasks=False
-                          )
-
-        with self.assertRaises(AirflowException):
-            job.run()
-
-    def test_backfill_ordered_concurrent_execute(self):
-        dag = DAG(
-            dag_id='test_backfill_ordered_concurrent_execute',
-            start_date=DEFAULT_DATE,
-            schedule_interval="@daily")
-
-        with dag:
-            op1 = DummyOperator(task_id='leave1')
-            op2 = DummyOperator(task_id='leave2')
-            op3 = DummyOperator(task_id='upstream_level_1')
-            op4 = DummyOperator(task_id='upstream_level_2')
-            op5 = DummyOperator(task_id='upstream_level_3')
-            # order randomly
-            op2.set_downstream(op3)
-            op1.set_downstream(op3)
-            op4.set_downstream(op5)
-            op3.set_downstream(op4)
-
-        dag.clear()
-
-        executor = TestExecutor(do_update=True)
-        job = BackfillJob(dag=dag,
-                          executor=executor,
-                          start_date=DEFAULT_DATE,
-                          end_date=DEFAULT_DATE + datetime.timedelta(days=2),
-                          )
-        job.run()
-
-        # test executor history keeps a list
-        history = executor.history
-
-        # check if right order. Every loop has a 'pause' (0) to change state
-        # from RUNNING to SUCCESS.
-        # 6,0,3,0,3,0,3,0 = 8 loops
-        self.assertEqual(8, len(history))
-
-        loop_count = 0
-
-        while len(history) > 0:
-            queued_tasks = history.pop(0)
-            if loop_count == 0:
-                # first loop should contain 6 tasks (3 days x 2 tasks)
-                self.assertEqual(6, len(queued_tasks))
-            if loop_count == 2 or loop_count == 4 or loop_count == 6:
-                # 3 days x 1 task
-                self.assertEqual(3, len(queued_tasks))
-            loop_count += 1
+#     def test_state_success(self):
+#         job = self.TestJob(lambda: True)
+#         job.run()
+
+#         self.assertEqual(job.state, State.SUCCESS)
+#         self.assertIsNotNone(job.end_date)
+
+#     def test_state_sysexit(self):
+#         import sys
+#         job = self.TestJob(lambda: sys.exit(0))
+#         job.run()
+
+#         self.assertEqual(job.state, State.SUCCESS)
+#         self.assertIsNotNone(job.end_date)
+
+#     def test_state_failed(self):
+#         def abort():
+#             raise RuntimeError("fail")
+
+#         job = self.TestJob(abort)
+#         with self.assertRaises(RuntimeError):
+#             job.run()
+
+#         self.assertEqual(job.state, State.FAILED)
+#         self.assertIsNotNone(job.end_date)
+
+
+# class BackfillJobTest(unittest.TestCase):
+
+#     def setUp(self):
+#         self.parser = cli.CLIFactory.get_parser()
+#         self.dagbag = DagBag(include_examples=True)
+
+#     @unittest.skipIf('sqlite' in configuration.conf.get('core', 'sql_alchemy_conn'),
+#                      "concurrent access not supported in sqlite")
+#     def test_trigger_controller_dag(self):
+#         dag = self.dagbag.get_dag('example_trigger_controller_dag')
+#         target_dag = self.dagbag.get_dag('example_trigger_target_dag')
+#         dag.clear()
+#         target_dag.clear()
+
+#         scheduler = SchedulerJob()
+#         queue = Mock()
+#         scheduler._process_task_instances(target_dag, queue=queue)
+#         self.assertFalse(queue.append.called)
+
+#         job = BackfillJob(
+#             dag=dag,
+#             start_date=DEFAULT_DATE,
+#             end_date=DEFAULT_DATE,
+#             ignore_first_depends_on_past=True
+#         )
+#         job.run()
+
+#         scheduler = SchedulerJob()
+#         queue = Mock()
+#         scheduler._process_task_instances(target_dag, queue=queue)
+
+#         self.assertTrue(queue.append.called)
+#         target_dag.clear()
+#         dag.clear()
+
+#     @unittest.skipIf('sqlite' in configuration.conf.get('core', 'sql_alchemy_conn'),
+#                      "concurrent access not supported in sqlite")
+#     def test_backfill_multi_dates(self):
+#         dag = self.dagbag.get_dag('example_bash_operator')
+#         dag.clear()
+
+#         job = BackfillJob(
+#             dag=dag,
+#             start_date=DEFAULT_DATE,
+#             end_date=DEFAULT_DATE + datetime.timedelta(days=1),
+#             ignore_first_depends_on_past=True
+#         )
+#         job.run()
+
+#         session = settings.Session()
+#         drs = session.query(DagRun).filter(
+#             DagRun.dag_id == 'example_bash_operator'
+#         ).order_by(DagRun.execution_date).all()
+
+#         self.assertTrue(drs[0].execution_date == DEFAULT_DATE)
+#         self.assertTrue(drs[0].state == State.SUCCESS)
+#         self.assertTrue(drs[1].execution_date ==
+#                         DEFAULT_DATE + datetime.timedelta(days=1))
+#         self.assertTrue(drs[1].state == State.SUCCESS)
+
+#         dag.clear()
+#         session.close()
+
+#     @unittest.skipIf('sqlite' in configuration.conf.get('core', 'sql_alchemy_conn'),
+#                      "concurrent access not supported in sqlite")
+#     def test_backfill_examples(self):
+#         """
+#         Test backfilling example dags
+
+#         Try to backfill some of the example dags. Be careful, not all dags are suitable
+#         for doing this. For example, a dag that sleeps forever, or does not have a
+#         schedule won't work here since you simply can't backfill them.
+#         """
+#         include_dags = {
+#             'example_branch_operator',
+#             'example_bash_operator',
+#             'example_skip_dag',
+#             'latest_only'
+#         }
+
+#         dags = [
+#             dag for dag in self.dagbag.dags.values()
+#             if 'example_dags' in dag.full_filepath and dag.dag_id in include_dags
+#         ]
+
+#         for dag in dags:
+#             dag.clear(
+#                 start_date=DEFAULT_DATE,
+#                 end_date=DEFAULT_DATE)
+
+#         # Make sure that we have the dags that we want to test available
+#         # in the example_dags folder, if this assertion fails, one of the
+#         # dags in the include_dags array isn't available anymore
+#         self.assertEqual(len(include_dags), len(dags))
+
+#         for i, dag in enumerate(sorted(dags, key=lambda d: d.dag_id)):
+#             logger.info('*** Running example DAG #{}: {}'.format(i, dag.dag_id))
+#             job = BackfillJob(
+#                 dag=dag,
+#                 start_date=DEFAULT_DATE,
+#                 end_date=DEFAULT_DATE,
+#                 ignore_first_depends_on_past=True)
+#             job.run()
+
+#     def test_backfill_conf(self):
+#         dag = DAG(
+#             dag_id='test_backfill_conf',
+#             start_date=DEFAULT_DATE,
+#             schedule_interval='@daily')
+
+#         with dag:
+#             DummyOperator(
+#                 task_id='op',
+#                 dag=dag)
+
+#         dag.clear()
+
+#         executor = TestExecutor(do_update=True)
+
+#         conf = json.loads("""{"key": "value"}""")
+#         job = BackfillJob(dag=dag,
+#                           executor=executor,
+#                           start_date=DEFAULT_DATE,
+#                           end_date=DEFAULT_DATE + datetime.timedelta(days=2),
+#                           conf=conf)
+#         job.run()
+
+#         dr = DagRun.find(dag_id='test_backfill_conf')
+
+#         self.assertEqual(conf, dr[0].conf)
+
+#     def test_backfill_run_rescheduled(self):
+#         dag = DAG(
+#             dag_id='test_backfill_run_rescheduled',
+#             start_date=DEFAULT_DATE,
+#             schedule_interval='@daily')
+
+#         with dag:
+#             DummyOperator(
+#                 task_id='test_backfill_run_rescheduled_task-1',
+#                 dag=dag,
+#             )
+
+#         dag.clear()
+
+#         executor = TestExecutor(do_update=True)
+
+#         job = BackfillJob(dag=dag,
+#                           executor=executor,
+#                           start_date=DEFAULT_DATE,
+#                           end_date=DEFAULT_DATE + datetime.timedelta(days=2),
+#                           )
+#         job.run()
+
+#         ti = TI(task=dag.get_task('test_backfill_run_rescheduled_task-1'),
+#                 execution_date=DEFAULT_DATE)
+#         ti.refresh_from_db()
+#         ti.set_state(State.UP_FOR_RESCHEDULE)
+
+#         job = BackfillJob(dag=dag,
+#                           executor=executor,
+#                           start_date=DEFAULT_DATE,
+#                           end_date=DEFAULT_DATE + datetime.timedelta(days=2),
+#                           rerun_failed_tasks=True
+#                           )
+#         job.run()
+#         ti = TI(task=dag.get_task('test_backfill_run_rescheduled_task-1'),
+#                 execution_date=DEFAULT_DATE)
+#         ti.refresh_from_db()
+#         self.assertEqual(ti.state, State.SUCCESS)
+
+#     def test_backfill_rerun_failed_tasks(self):
+#         dag = DAG(
+#             dag_id='test_backfill_rerun_failed',
+#             start_date=DEFAULT_DATE,
+#             schedule_interval='@daily')
+
+#         with dag:
+#             DummyOperator(
+#                 task_id='test_backfill_rerun_failed_task-1',
+#                 dag=dag)
+
+#         dag.clear()
+
+#         executor = TestExecutor(do_update=True)
+
+#         job = BackfillJob(dag=dag,
+#                           executor=executor,
+#                           start_date=DEFAULT_DATE,
+#                           end_date=DEFAULT_DATE + datetime.timedelta(days=2),
+#                           )
+#         job.run()
+
+#         ti = TI(task=dag.get_task('test_backfill_rerun_failed_task-1'),
+#                 execution_date=DEFAULT_DATE)
+#         ti.refresh_from_db()
+#         ti.set_state(State.FAILED)
+
+#         job = BackfillJob(dag=dag,
+#                           executor=executor,
+#                           start_date=DEFAULT_DATE,
+#                           end_date=DEFAULT_DATE + datetime.timedelta(days=2),
+#                           rerun_failed_tasks=True
+#                           )
+#         job.run()
+#         ti = TI(task=dag.get_task('test_backfill_rerun_failed_task-1'),
+#                 execution_date=DEFAULT_DATE)
+#         ti.refresh_from_db()
+#         self.assertEqual(ti.state, State.SUCCESS)
+
+#     def test_backfill_rerun_upstream_failed_tasks(self):
+#             dag = DAG(
+#                 dag_id='test_backfill_rerun_upstream_failed',
+#                 start_date=DEFAULT_DATE,
+#                 schedule_interval='@daily')
+
+#             with dag:
+#                 t1 = DummyOperator(task_id='test_backfill_rerun_upstream_failed_task-1',
+#                                    dag=dag)
+#                 t2 = DummyOperator(task_id='test_backfill_rerun_upstream_failed_task-2',
+#                                    dag=dag)
+#                 t1.set_upstream(t2)
+
+#             dag.clear()
+#             executor = TestExecutor(do_update=True)
+
+#             job = BackfillJob(dag=dag,
+#                               executor=executor,
+#                               start_date=DEFAULT_DATE,
+#                               end_date=DEFAULT_DATE + datetime.timedelta(days=2),
+#                               )
+#             job.run()
+
+#             ti = TI(task=dag.get_task('test_backfill_rerun_upstream_failed_task-1'),
+#                     execution_date=DEFAULT_DATE)
+#             ti.refresh_from_db()
+#             ti.set_state(State.UPSTREAM_FAILED)
+
+#             job = BackfillJob(dag=dag,
+#                               executor=executor,
+#                               start_date=DEFAULT_DATE,
+#                               end_date=DEFAULT_DATE + datetime.timedelta(days=2),
+#                               rerun_failed_tasks=True
+#                               )
+#             job.run()
+#             ti = TI(task=dag.get_task('test_backfill_rerun_upstream_failed_task-1'),
+#                     execution_date=DEFAULT_DATE)
+#             ti.refresh_from_db()
+#             self.assertEqual(ti.state, State.SUCCESS)
+
+#     def test_backfill_rerun_failed_tasks_without_flag(self):
+#         dag = DAG(
+#             dag_id='test_backfill_rerun_failed',
+#             start_date=DEFAULT_DATE,
+#             schedule_interval='@daily')
+
+#         with dag:
+#             DummyOperator(
+#                 task_id='test_backfill_rerun_failed_task-1',
+#                 dag=dag)
+
+#         dag.clear()
+
+#         executor = TestExecutor(do_update=True)
+
+#         job = BackfillJob(dag=dag,
+#                           executor=executor,
+#                           start_date=DEFAULT_DATE,
+#                           end_date=DEFAULT_DATE + datetime.timedelta(days=2),
+#                           )
+#         job.run()
+
+#         ti = TI(task=dag.get_task('test_backfill_rerun_failed_task-1'),
+#                 execution_date=DEFAULT_DATE)
+#         ti.refresh_from_db()
+#         ti.set_state(State.FAILED)
+
+#         job = BackfillJob(dag=dag,
+#                           executor=executor,
+#                           start_date=DEFAULT_DATE,
+#                           end_date=DEFAULT_DATE + datetime.timedelta(days=2),
+#                           rerun_failed_tasks=False
+#                           )
+
+#         with self.assertRaises(AirflowException):
+#             job.run()
+
+#     def test_backfill_ordered_concurrent_execute(self):
+#         dag = DAG(
+#             dag_id='test_backfill_ordered_concurrent_execute',
+#             start_date=DEFAULT_DATE,
+#             schedule_interval="@daily")
+
+#         with dag:
+#             op1 = DummyOperator(task_id='leave1')
+#             op2 = DummyOperator(task_id='leave2')
+#             op3 = DummyOperator(task_id='upstream_level_1')
+#             op4 = DummyOperator(task_id='upstream_level_2')
+#             op5 = DummyOperator(task_id='upstream_level_3')
+#             # order randomly
+#             op2.set_downstream(op3)
+#             op1.set_downstream(op3)
+#             op4.set_downstream(op5)
+#             op3.set_downstream(op4)
+
+#         dag.clear()
+
+#         executor = TestExecutor(do_update=True)
+#         job = BackfillJob(dag=dag,
+#                           executor=executor,
+#                           start_date=DEFAULT_DATE,
+#                           end_date=DEFAULT_DATE + datetime.timedelta(days=2),
+#                           )
+#         job.run()
+
+#         # test executor history keeps a list
+#         history = executor.history
+
+#         # check if right order. Every loop has a 'pause' (0) to change state
+#         # from RUNNING to SUCCESS.
+#         # 6,0,3,0,3,0,3,0 = 8 loops
+#         self.assertEqual(8, len(history))
+
+#         loop_count = 0
+
+#         while len(history) > 0:
+#             queued_tasks = history.pop(0)
+#             if loop_count == 0:
+#                 # first loop should contain 6 tasks (3 days x 2 tasks)
+#                 self.assertEqual(6, len(queued_tasks))
+#             if loop_count == 2 or loop_count == 4 or loop_count == 6:
+#                 # 3 days x 1 task
+#                 self.assertEqual(3, len(queued_tasks))
+#             loop_count += 1
 
     def test_backfill_pooled_tasks(self):
         """

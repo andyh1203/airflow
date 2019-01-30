@@ -25,6 +25,7 @@ import airflow
 from airflow.exceptions import AirflowException
 from airflow.executors.sequential_executor import SequentialExecutor
 from airflow.models import DAG, DagBag
+from airflow.models.pool import Pool
 from airflow.operators.dummy_operator import DummyOperator
 from airflow.operators.subdag_operator import SubDagOperator
 from airflow.utils.timezone import datetime
@@ -79,8 +80,8 @@ class SubDagOperatorTests(unittest.TestCase):
         subdag = DAG('parent.child', default_args=default_args)
 
         session = airflow.settings.Session()
-        pool_1 = airflow.models.Pool(pool='test_pool_1', slots=1)
-        pool_10 = airflow.models.Pool(pool='test_pool_10', slots=10)
+        pool_1 = Pool(pool='test_pool_1', slots=1)
+        pool_10 = Pool(pool='test_pool_10', slots=10)
         session.add(pool_1)
         session.add(pool_10)
         session.commit()
@@ -110,8 +111,8 @@ class SubDagOperatorTests(unittest.TestCase):
         subdag = DAG('parent.child', default_args=default_args)
 
         session = airflow.settings.Session()
-        pool_1 = airflow.models.Pool(pool='test_pool_1', slots=1)
-        pool_10 = airflow.models.Pool(pool='test_pool_10', slots=10)
+        pool_1 = Pool(pool='test_pool_1', slots=1)
+        pool_10 = Pool(pool='test_pool_10', slots=10)
         session.add(pool_1)
         session.add(pool_10)
         session.commit()

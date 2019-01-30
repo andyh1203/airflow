@@ -44,6 +44,7 @@ from airflow import executors, models, settings
 from airflow.exceptions import AirflowException
 from airflow.models import DAG, DagRun, errors
 from airflow.models.dagpickle import DagPickle
+from airflow.models.pool import Pool
 from airflow.models.slamiss import SlaMiss
 from airflow.settings import Stats
 from airflow.task.task_runner import get_task_runner
@@ -1101,7 +1102,7 @@ class SchedulerJob(BaseJob):
                               task_instance_str))
 
         # Get the pool settings
-        pools = {p.pool: p for p in session.query(models.Pool).all()}
+        pools = {p.pool: p for p in session.query(Pool).all()}
 
         pool_to_task_instances = defaultdict(list)
         for task_instance in task_instances_to_examine:

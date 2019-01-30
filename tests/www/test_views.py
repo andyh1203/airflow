@@ -42,6 +42,7 @@ from airflow.config_templates.airflow_local_settings import DEFAULT_LOGGING_CONF
 from airflow.jobs import BaseJob
 from airflow.models import DAG, DagRun, TaskInstance
 from airflow.models.connection import Connection
+from airflow.models.pool import Pool
 from airflow.operators.dummy_operator import DummyOperator
 from airflow.settings import Session
 from airflow.utils import dates, timezone
@@ -229,7 +230,7 @@ class TestPoolModelView(TestBase):
         }
 
     def tearDown(self):
-        self.clear_table(models.Pool)
+        self.clear_table(Pool)
         super(TestPoolModelView, self).tearDown()
 
     def test_create_pool_with_same_name(self):
@@ -255,7 +256,7 @@ class TestPoolModelView(TestBase):
 
     def test_odd_name(self):
         self.pool['pool'] = 'test-pool<script></script>'
-        self.session.add(models.Pool(**self.pool))
+        self.session.add(Pool(**self.pool))
         self.session.commit()
         resp = self.client.get('/pool/list/')
         self.check_content_in_response('test-pool&lt;script&gt;', resp)

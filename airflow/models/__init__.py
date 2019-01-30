@@ -85,6 +85,7 @@ from airflow.exceptions import (
 from airflow.dag.base_dag import BaseDag, BaseDagBag
 from airflow.lineage import apply_lineage, prepare_lineage
 from airflow.models.dagpickle import DagPickle
+from airflow.models.pool import Pool
 from airflow.ti_deps.deps.not_in_retry_period_dep import NotInRetryPeriodDep
 from airflow.ti_deps.deps.prev_dagrun_dep import PrevDagrunDep
 from airflow.ti_deps.deps.trigger_rule_dep import TriggerRuleDep
@@ -5020,62 +5021,6 @@ class DagRun(Base, LoggingMixin):
             .all()
         )
         return dagruns
-
-
-class Pool(Base):
-    __tablename__ = "slot_pool"
-
-    id = Column(Integer, primary_key=True)
-    pool = Column(String(50), unique=True)
-    slots = Column(Integer, default=0)
-    description = Column(Text)
-
-    def __repr__(self):
-        return self.pool
-
-    def to_json(self):
-        return {
-            'id': self.id,
-            'pool': self.pool,
-            'slots': self.slots,
-            'description': self.description,
-        }
-
-    @provide_session
-    def used_slots(self, session):
-        """
-        Returns the number of slots used at the moment
-        """
-        running = (
-            session
-            .query(TaskInstance)
-            .filter(TaskInstance.pool == self.pool)
-            .filter(TaskInstance.state == State.RUNNING)
-            .count()
-        )
-        return running
-
-    @provide_session
-    def queued_slots(self, session):
-        """
-        Returns the number of slots used at the moment
-        """
-        return (
-            session
-            .query(TaskInstance)
-            .filter(TaskInstance.pool == self.pool)
-            .filter(TaskInstance.state == State.QUEUED)
-            .count()
-        )
-
-    @provide_session
-    def open_slots(self, session):
-        """
-        Returns the number of slots open at the moment
-        """
-        used_slots = self.used_slots(session=session)
-        queued_slots = self.queued_slots(session=session)
-        return self.slots - used_slots - queued_slots
 
 
 class KubeResourceVersion(Base):

@@ -19,7 +19,7 @@
 
 import unittest
 
-from airflow import models
+from airflow.models import Pool
 from airflow import settings
 from airflow.api.common.experimental import pool as pool_api
 from airflow.exceptions import AirflowBadRequest, PoolNotFound
@@ -32,7 +32,7 @@ class TestPool(unittest.TestCase):
         self.pools = []
         for i in range(2):
             name = 'experimental_%s' % (i + 1)
-            pool = models.Pool(
+            pool = Pool(
                 pool=name,
                 slots=i,
                 description=name,
@@ -42,7 +42,7 @@ class TestPool(unittest.TestCase):
         self.session.commit()
 
     def tearDown(self):
-        self.session.query(models.Pool).delete()
+        self.session.query(Pool).delete()
         self.session.commit()
         self.session.close()
 
@@ -79,7 +79,7 @@ class TestPool(unittest.TestCase):
         self.assertEqual(pool.pool, 'foo')
         self.assertEqual(pool.slots, 5)
         self.assertEqual(pool.description, '')
-        self.assertEqual(self.session.query(models.Pool).count(), 3)
+        self.assertEqual(self.session.query(Pool).count(), 3)
 
     def test_create_pool_existing(self):
         pool = pool_api.create_pool(name=self.pools[0].pool,
@@ -89,7 +89,7 @@ class TestPool(unittest.TestCase):
         self.assertEqual(pool.pool, self.pools[0].pool)
         self.assertEqual(pool.slots, 5)
         self.assertEqual(pool.description, '')
-        self.assertEqual(self.session.query(models.Pool).count(), 2)
+        self.assertEqual(self.session.query(Pool).count(), 2)
 
     def test_create_pool_bad_name(self):
         for name in ('', '    '):
@@ -114,7 +114,7 @@ class TestPool(unittest.TestCase):
         pool = pool_api.delete_pool(name=self.pools[0].pool,
                                     session=self.session)
         self.assertEqual(pool.pool, self.pools[0].pool)
-        self.assertEqual(self.session.query(models.Pool).count(), 1)
+        self.assertEqual(self.session.query(Pool).count(), 1)
 
     def test_delete_pool_non_existing(self):
         self.assertRaisesRegexp(pool_api.PoolNotFound,
