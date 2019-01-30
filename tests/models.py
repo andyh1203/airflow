@@ -48,7 +48,6 @@ from airflow.jobs import BackfillJob
 from airflow.models import DAG, TaskInstance as TI
 from airflow.models import DagModel, DagRun
 from airflow.models import KubeResourceVersion, KubeWorkerIdentifier
-from airflow.models import SkipMixin
 from airflow.models import State as ST
 from airflow.models import TaskReschedule as TR
 from airflow.models import XCom
@@ -64,6 +63,7 @@ from airflow.ti_deps.deps.trigger_rule_dep import TriggerRuleDep
 from airflow.utils import timezone
 from airflow.utils.dag_processing import SimpleTaskInstance
 from airflow.utils.db import create_session
+from airflow.utils.skip_mixin import SkipMixin
 from airflow.utils.state import State
 from airflow.utils.trigger_rule import TriggerRule
 from airflow.utils.weight_rule import WeightRule
