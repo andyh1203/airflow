@@ -59,6 +59,7 @@ from airflow.models.connection import Connection
 from airflow.models.log import Log
 from airflow.models.slamiss import SlaMiss
 from airflow.models.taskfail import TaskFail
+from airflow.models.variable import Variable
 from airflow.models.xcom import XCom
 from airflow.ti_deps.dep_context import DepContext, QUEUE_DEPS, SCHEDULER_DEPS
 from airflow.utils import timezone
@@ -2051,7 +2052,7 @@ class VariableModelView(AirflowModelView):
 
     list_template = 'airflow/variable_list.html'
 
-    datamodel = AirflowModelView.CustomSQLAInterface(models.Variable)
+    datamodel = AirflowModelView.CustomSQLAInterface(Variable)
 
     base_permissions = ['can_add', 'can_list', 'can_edit', 'can_delete', 'can_varimport']
 
